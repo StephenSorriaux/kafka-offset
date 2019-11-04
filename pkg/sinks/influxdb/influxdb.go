@@ -43,7 +43,11 @@ func (s *Sink) kafkaMeter(metric metrics.KafkaMeter) error {
 	}
 	tags := make(map[string]string, len(metric.Meta))
 	for k, v := range metric.Meta {
-		tags[k] = fmt.Sprintf("%v", v)
+		// timestamp not useful as an InfluxDB tag
+		// moreover its a time.Time object...
+		if "timestamp" != k {
+			tags[k] = fmt.Sprintf("%v", v)
+		}
 	}
 	fields := map[string]interface{}{
 		"count":     metric.Count(),
@@ -73,7 +77,9 @@ func (s *Sink) kafkaGauge(metric metrics.KafkaGauge) error {
 	}
 	tags := make(map[string]string, len(metric.Meta))
 	for k, v := range metric.Meta {
-		tags[k] = fmt.Sprintf("%v", v)
+		if "timestamp" != k {
+			tags[k] = fmt.Sprintf("%v", v)
+		}
 	}
 	fields := map[string]interface{}{
 		"value": metric.Value(),
