@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 
 	influxdb "github.com/influxdata/influxdb/client/v2"
 	"github.com/ryarnyah/kafka-offset/pkg/metrics"
@@ -25,7 +26,8 @@ var (
 // Sink write metrics to kafka topic
 type Sink struct {
 	client influxdb.Client
-
+	batch  influxdb.BatchPoints
+	mutex  sync.Mutex
 	*common.Sink
 }
 
@@ -34,13 +36,6 @@ func (s *Sink) closeClient() error {
 }
 
 func (s *Sink) kafkaMeter(metric metrics.KafkaMeter) error {
-	bp, err := influxdb.NewBatchPoints(influxdb.BatchPointsConfig{
-		Database:  *influxDBDatabase,
-		Precision: "s",
-	})
-	if err != nil {
-		return err
-	}
 	tags := make(map[string]string, len(metric.Meta))
 	for k, v := range metric.Meta {
 		// timestamp not useful as an InfluxDB tag
@@ -60,21 +55,30 @@ func (s *Sink) kafkaMeter(metric metrics.KafkaMeter) error {
 	if err != nil {
 		return err
 	}
-	bp.AddPoint(pt)
-	if err := s.client.Write(bp); err != nil {
-		return err
-	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.batch.AddPoint(pt)
 	return nil
 }
 
-func (s *Sink) kafkaGauge(metric metrics.KafkaGauge) error {
+// SendBatch pke voila
+func (s *Sink) SendBatch() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	log.Printf("Trigger batch for %v points", len(s.batch.Points()))
+	if err := s.client.Write(s.batch); err != nil {
+		return err
+	}
 	bp, err := influxdb.NewBatchPoints(influxdb.BatchPointsConfig{
 		Database:  *influxDBDatabase,
 		Precision: "s",
 	})
-	if err != nil {
-		return err
-	}
+	s.batch = bp
+	return err
+
+}
+
+func (s *Sink) kafkaGauge(metric metrics.KafkaGauge) error {
 	tags := make(map[string]string, len(metric.Meta))
 	for k, v := range metric.Meta {
 		if "timestamp" != k {
@@ -85,14 +89,10 @@ func (s *Sink) kafkaGauge(metric metrics.KafkaGauge) error {
 		"value": metric.Value(),
 	}
 	pt, err := influxdb.NewPoint(metric.Name, tags, fields, metric.Timestamp)
-	if err != nil {
-		return err
-	}
-	bp.AddPoint(pt)
-	if err := s.client.Write(bp); err != nil {
-		return err
-	}
-	return nil
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.batch.AddPoint(pt)
+	return err
 }
 
 // NewSink build new kafka sink
@@ -106,14 +106,22 @@ func NewSink() (metrics.Sink, error) {
 		log.Fatal(err)
 	}
 
+	bp, err := influxdb.NewBatchPoints(influxdb.BatchPointsConfig{
+		Database:  *influxDBDatabase,
+		Precision: "s",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 	sink := &Sink{
 		Sink:   common.NewCommonSink(),
 		client: c,
+		batch:  bp,
 	}
-
 	sink.KafkaMeterFunc = sink.kafkaMeter
 	sink.KafkaGaugeFunc = sink.kafkaGauge
 	sink.CloseFunc = sink.closeClient
+	sink.SendBatchFunc = sink.SendBatch
 
 	sink.Run()
 

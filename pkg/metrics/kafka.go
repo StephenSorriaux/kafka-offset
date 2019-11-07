@@ -43,6 +43,7 @@ var (
 	sourcePassword       = flag.String("source-sasl-password", os.Getenv("SOURCE_KAFKA_PASSWORD"), "Kafka SASL password")
 	sourceScrapeInterval = flag.Duration("source-scrape-interval", 60*time.Second, "Time beetween scrape kafka metrics")
 	sinkProduceInterval  = flag.Duration("sink-produce-interval", 60*time.Second, "Time beetween metrics production")
+	batchMode            = flag.Bool("batch", false, "Send metrics in batch mode")
 )
 
 func init() {
@@ -115,7 +116,7 @@ func (s *KafkaSource) Run() chan interface{} {
 		for {
 			select {
 			case <-intervalTicker.C:
-				err := s.produceMetrics()
+				err := s.produceMetrics(*batchMode)
 				if err != nil {
 					logrus.Error(err)
 				}
@@ -415,7 +416,9 @@ func (s *KafkaSource) fetchMetrics() error {
 	return nil
 }
 
-func (s *KafkaSource) produceMetrics() error {
+func (s *KafkaSource) produceMetrics(batchMode bool) error {
+	logrus.Infof("produceMetrics triggered")
+	tot := 0
 	s.kafkaRegistry.Each(func(name string, metric interface{}) {
 		switch metric := metric.(type) {
 		case metrics.Meter:
@@ -423,7 +426,12 @@ func (s *KafkaSource) produceMetrics() error {
 		case metrics.Gauge:
 			s.sink.GetMetricsChan() <- metric.Snapshot()
 		}
+		tot++
 	})
+	logrus.Infof("produced %v metrics", tot)
+	if batchMode {
+		s.sink.GetEndBatchChan() <- 1
+	}
 	return nil
 }
 
